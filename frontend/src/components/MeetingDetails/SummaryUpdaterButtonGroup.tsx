@@ -11,8 +11,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import Analytics from '@/lib/analytics';
-import { Summary } from '@/types';
-import { exportAsMarkdown, exportAsPDF, exportAsDocx } from '@/lib/exportUtils';
+import { exportAsMarkdown, exportAsPDF, exportAsDocx, Summary } from '@/lib/exportUtils';
 import { toast } from 'sonner';
 
 interface SummaryUpdaterButtonGroupProps {

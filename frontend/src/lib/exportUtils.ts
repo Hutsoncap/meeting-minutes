@@ -1,7 +1,24 @@
 import { jsPDF } from 'jspdf';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx';
 import { saveAs } from 'file-saver';
-import { Summary } from '@/types';
+
+// Flexible summary type that handles multiple formats
+interface SummarySection {
+  title?: string;
+  content?: string | Array<string | { text?: string }>;
+  blocks?: Array<{ text?: string }>;
+  // BlockNote properties
+  id?: string;
+  type?: string;
+  props?: Record<string, unknown>;
+  children?: SummarySection[];
+}
+
+export interface Summary {
+  markdown?: string;
+  summary_json?: SummarySection[];
+  [key: string]: unknown;
+}
 
 /**
  * Convert summary to plain text/markdown format
