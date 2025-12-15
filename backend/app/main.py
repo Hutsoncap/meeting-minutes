@@ -982,7 +982,7 @@ async def update_speaker(meeting_id: str, speaker_id: str, request: SpeakerUpdat
             raise HTTPException(status_code=404, detail="Speaker not found")
 
         # Also update all transcripts with this speaker
-        await db.assign_speaker_to_transcript(speaker_id, speaker_id, request.label)
+        await db.update_speaker_label_on_transcripts(speaker_id, request.label)
 
         return {"message": "Speaker updated successfully"}
 

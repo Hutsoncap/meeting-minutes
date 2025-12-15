@@ -1505,6 +1505,16 @@ class DatabaseManager:
             """, (speaker_id, speaker_label, transcript_id))
             await conn.commit()
 
+    async def update_speaker_label_on_transcripts(self, speaker_id: str, new_label: str):
+        """Update the speaker label on all transcripts that have this speaker assigned"""
+        async with self._get_connection() as conn:
+            await conn.execute("""
+                UPDATE transcripts
+                SET speaker_label = ?
+                WHERE speaker_id = ?
+            """, (new_label, speaker_id))
+            await conn.commit()
+
     async def get_diarization_status(self, meeting_id: str):
         """Get the diarization status for a meeting"""
         async with self._get_connection() as conn:
