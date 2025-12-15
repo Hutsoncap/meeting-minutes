@@ -77,7 +77,8 @@ class SchemaValidator:
                 ('groqApiKey', 'TEXT', ''),
                 ('openaiApiKey', 'TEXT', ''),
                 ('anthropicApiKey', 'TEXT', ''),
-                ('ollamaApiKey', 'TEXT', '')
+                ('ollamaApiKey', 'TEXT', ''),
+                ('openRouterApiKey', 'TEXT', '')
             ],
             'transcript_settings': [
                 ('id', 'TEXT', 'PRIMARY KEY'),
@@ -88,6 +89,83 @@ class SchemaValidator:
                 ('elevenLabsApiKey', 'TEXT', ''),
                 ('groqApiKey', 'TEXT', ''),
                 ('openaiApiKey', 'TEXT', '')
+            ],
+            'summary_templates': [
+                ('id', 'TEXT', 'PRIMARY KEY'),
+                ('name', 'TEXT', 'NOT NULL'),
+                ('description', 'TEXT', ''),
+                ('schema_json', 'TEXT', 'NOT NULL'),
+                ('prompt_template', 'TEXT', ''),
+                ('is_default', 'INTEGER', 'DEFAULT 0'),
+                ('is_preset', 'INTEGER', 'DEFAULT 0'),
+                ('created_at', 'TEXT', 'NOT NULL'),
+                ('updated_at', 'TEXT', 'NOT NULL')
+            ],
+            'chat_conversations': [
+                ('id', 'TEXT', 'PRIMARY KEY'),
+                ('meeting_id', 'TEXT', 'NOT NULL'),
+                ('title', 'TEXT', ''),
+                ('created_at', 'TEXT', 'NOT NULL'),
+                ('updated_at', 'TEXT', 'NOT NULL')
+            ],
+            'chat_messages': [
+                ('id', 'TEXT', 'PRIMARY KEY'),
+                ('conversation_id', 'TEXT', 'NOT NULL'),
+                ('role', 'TEXT', 'NOT NULL'),
+                ('content', 'TEXT', 'NOT NULL'),
+                ('context_chunks', 'TEXT', ''),
+                ('created_at', 'TEXT', 'NOT NULL')
+            ],
+            'speakers': [
+                ('id', 'TEXT', 'PRIMARY KEY'),
+                ('meeting_id', 'TEXT', 'NOT NULL'),
+                ('label', 'TEXT', 'NOT NULL'),
+                ('color', 'TEXT', ''),
+                ('created_at', 'TEXT', 'NOT NULL')
+            ],
+            'diarization_processes': [
+                ('meeting_id', 'TEXT', 'PRIMARY KEY'),
+                ('status', 'TEXT', 'NOT NULL'),
+                ('error', 'TEXT', ''),
+                ('created_at', 'TEXT', 'NOT NULL'),
+                ('updated_at', 'TEXT', 'NOT NULL')
+            ],
+            'calendar_accounts': [
+                ('id', 'TEXT', 'PRIMARY KEY'),
+                ('provider', 'TEXT', 'NOT NULL'),
+                ('email', 'TEXT', 'NOT NULL'),
+                ('access_token', 'TEXT', ''),
+                ('refresh_token', 'TEXT', ''),
+                ('token_expires_at', 'TEXT', ''),
+                ('created_at', 'TEXT', 'NOT NULL'),
+                ('updated_at', 'TEXT', 'NOT NULL')
+            ],
+            'calendar_events': [
+                ('id', 'TEXT', 'PRIMARY KEY'),
+                ('account_id', 'TEXT', 'NOT NULL'),
+                ('external_id', 'TEXT', 'NOT NULL'),
+                ('title', 'TEXT', 'NOT NULL'),
+                ('description', 'TEXT', ''),
+                ('start_time', 'TEXT', 'NOT NULL'),
+                ('end_time', 'TEXT', 'NOT NULL'),
+                ('meeting_url', 'TEXT', ''),
+                ('attendees', 'TEXT', ''),
+                ('meeting_id', 'TEXT', ''),
+                ('created_at', 'TEXT', 'NOT NULL'),
+                ('updated_at', 'TEXT', 'NOT NULL')
+            ],
+            'auto_join_settings': [
+                ('id', 'TEXT', 'PRIMARY KEY'),
+                ('enabled', 'INTEGER', 'DEFAULT 0'),
+                ('auto_record', 'INTEGER', 'DEFAULT 1'),
+                ('reminder_minutes', 'INTEGER', 'DEFAULT 5'),
+                ('supported_platforms', 'TEXT', '')
+            ],
+            'meeting_join_log': [
+                ('id', 'TEXT', 'PRIMARY KEY'),
+                ('event_id', 'TEXT', 'NOT NULL'),
+                ('action', 'TEXT', 'NOT NULL'),
+                ('timestamp', 'TEXT', 'NOT NULL')
             ]
         }
 

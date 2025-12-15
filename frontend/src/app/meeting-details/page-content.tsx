@@ -1,11 +1,14 @@
 "use client";
 import { useState, useEffect } from 'react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import { Summary, SummaryResponse } from '@/types';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import Analytics from '@/lib/analytics';
 import { TranscriptPanel } from '@/components/MeetingDetails/TranscriptPanel';
 import { SummaryPanel } from '@/components/MeetingDetails/SummaryPanel';
+import { ChatPanel } from '@/components/Chat';
+import { MessageSquare, X } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 
 // Custom hooks
 import { useMeetingData } from '@/hooks/meeting-details/useMeetingData';
@@ -38,6 +41,7 @@ export default function PageContent({
   const [customPrompt, setCustomPrompt] = useState<string>('');
   const [isRecording] = useState(false);
   const [summaryResponse] = useState<SummaryResponse | null>(null);
+  const [isChatOpen, setIsChatOpen] = useState(false);
 
   // Sidebar context
   const { serverAddress } = useSidebar();
@@ -99,8 +103,7 @@ export default function PageContent({
       transition={{ duration: 0.3, ease: 'easeOut' }}
       className="flex flex-col h-screen bg-gray-50"
     >
-      <div className="flex flex-1 overflow-hidden">
-      
+      <div className="flex flex-1 overflow-hidden relative">
 
         <TranscriptPanel
           transcripts={meetingData.transcripts}
@@ -111,7 +114,7 @@ export default function PageContent({
           isRecording={isRecording}
         />
 
-          <SummaryPanel
+        <SummaryPanel
           meeting={meeting}
           meetingTitle={meetingData.meetingTitle}
           onTitleChange={meetingData.handleTitleChange}
@@ -144,6 +147,41 @@ export default function PageContent({
           onTemplateSelect={templates.handleTemplateSelection}
           isModelConfigLoading={modelConfig.isLoading}
         />
+
+        {/* Chat Toggle Button */}
+        <Button
+          variant="blue"
+          size="icon"
+          className="fixed bottom-6 right-6 h-12 w-12 rounded-full shadow-lg z-50"
+          onClick={() => setIsChatOpen(!isChatOpen)}
+          title={isChatOpen ? "Close chat" : "Chat with meeting"}
+        >
+          {isChatOpen ? (
+            <X className="h-5 w-5" />
+          ) : (
+            <MessageSquare className="h-5 w-5" />
+          )}
+        </Button>
+
+        {/* Chat Panel Sidebar */}
+        <AnimatePresence>
+          {isChatOpen && (
+            <motion.div
+              initial={{ x: '100%', opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={{ x: '100%', opacity: 0 }}
+              transition={{ type: 'spring', damping: 25, stiffness: 300 }}
+              className="fixed right-0 top-0 h-full w-[400px] bg-white shadow-xl border-l border-gray-200 z-40"
+            >
+              <ChatPanel
+                meetingId={meeting.id}
+                meetingTitle={meetingData.meetingTitle}
+                modelProvider={modelConfig.modelConfig.provider || 'ollama'}
+                modelName={modelConfig.modelConfig.model || 'llama3.2:latest'}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
 
       </div>
     </motion.div>

@@ -1,7 +1,7 @@
 import aiosqlite
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Dict
 import logging
 from contextlib import asynccontextmanager
@@ -138,7 +138,8 @@ class DatabaseManager:
                     groqApiKey TEXT,
                     openaiApiKey TEXT,
                     anthropicApiKey TEXT,
-                    ollamaApiKey TEXT
+                    ollamaApiKey TEXT,
+                    openRouterApiKey TEXT
                 )
             """)
 
@@ -154,6 +155,141 @@ class DatabaseManager:
                     groqApiKey TEXT,
                     openaiApiKey TEXT
                 )
+            """)
+
+            # Create summary_templates table for custom summary templates
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS summary_templates (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    schema_json TEXT NOT NULL,
+                    prompt_template TEXT,
+                    is_default INTEGER DEFAULT 0,
+                    is_preset INTEGER DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+
+            # Create chat_conversations table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS chat_conversations (
+                    id TEXT PRIMARY KEY,
+                    meeting_id TEXT NOT NULL,
+                    title TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
+                )
+            """)
+
+            # Create chat_messages table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS chat_messages (
+                    id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    context_chunks TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE
+                )
+            """)
+
+            # Create speakers table for speaker identification
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS speakers (
+                    id TEXT PRIMARY KEY,
+                    meeting_id TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    color TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
+                )
+            """)
+
+            # Create diarization_processes table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS diarization_processes (
+                    meeting_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
+                )
+            """)
+
+            # Add speaker columns to transcripts table (migration for existing databases)
+            try:
+                cursor.execute("ALTER TABLE transcripts ADD COLUMN speaker_id TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+            try:
+                cursor.execute("ALTER TABLE transcripts ADD COLUMN speaker_label TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
+            # Create calendar_accounts table for Google Calendar integration
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS calendar_accounts (
+                    id TEXT PRIMARY KEY,
+                    provider TEXT NOT NULL DEFAULT 'google',
+                    email TEXT NOT NULL,
+                    access_token TEXT,
+                    refresh_token TEXT,
+                    token_expires_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+
+            # Create calendar_events table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS calendar_events (
+                    id TEXT PRIMARY KEY,
+                    account_id TEXT NOT NULL,
+                    external_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    description TEXT,
+                    start_time TEXT NOT NULL,
+                    end_time TEXT NOT NULL,
+                    meeting_url TEXT,
+                    attendees TEXT,
+                    meeting_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (account_id) REFERENCES calendar_accounts(id) ON DELETE CASCADE
+                )
+            """)
+
+            # Create auto_join_settings table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS auto_join_settings (
+                    id TEXT PRIMARY KEY DEFAULT '1',
+                    enabled INTEGER DEFAULT 0,
+                    auto_record INTEGER DEFAULT 1,
+                    reminder_minutes INTEGER DEFAULT 5,
+                    supported_platforms TEXT DEFAULT '["zoom","teams","meet"]'
+                )
+            """)
+
+            # Create meeting_join_log table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS meeting_join_log (
+                    id TEXT PRIMARY KEY,
+                    event_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    FOREIGN KEY (event_id) REFERENCES calendar_events(id) ON DELETE CASCADE
+                )
+            """)
+
+            # Initialize auto_join_settings if not exists
+            cursor.execute("""
+                INSERT OR IGNORE INTO auto_join_settings (id, enabled, auto_record, reminder_minutes, supported_platforms)
+                VALUES ('1', 0, 1, 5, '["zoom","teams","meet"]')
             """)
 
             conn.commit()
@@ -581,7 +717,7 @@ class DatabaseManager:
 
     async def save_api_key(self, api_key: str, provider: str):
         """Save the API key"""
-        provider_list = ["openai", "claude", "groq", "ollama"]
+        provider_list = ["openai", "claude", "groq", "ollama", "openrouter"]
         if provider not in provider_list:
             raise ValueError(f"Invalid provider: {provider}")
         if provider == "openai":
@@ -592,6 +728,8 @@ class DatabaseManager:
             api_key_name = "groqApiKey"
         elif provider == "ollama":
             api_key_name = "ollamaApiKey"
+        elif provider == "openrouter":
+            api_key_name = "openRouterApiKey"
             
         try:
             async with self._get_connection() as conn:
@@ -626,7 +764,7 @@ class DatabaseManager:
 
     async def get_api_key(self, provider: str):
         """Get the API key"""
-        provider_list = ["openai", "claude", "groq", "ollama"]
+        provider_list = ["openai", "claude", "groq", "ollama", "openrouter"]
         if provider not in provider_list:
             raise ValueError(f"Invalid provider: {provider}")
         if provider == "openai":
@@ -637,6 +775,8 @@ class DatabaseManager:
             api_key_name = "groqApiKey"
         elif provider == "ollama":
             api_key_name = "ollamaApiKey"
+        elif provider == "openrouter":
+            api_key_name = "openRouterApiKey"
         async with self._get_connection() as conn:
             cursor = await conn.execute(f"SELECT {api_key_name} FROM settings WHERE id = '1'")
             row = await cursor.fetchone()
@@ -909,5 +1049,796 @@ class DatabaseManager:
             logger.error(f"Error updating meeting summary: {str(e)}")
             raise
 
-   
+    # ==================== SUMMARY TEMPLATES ====================
+
+    async def get_all_templates(self):
+        """Get all summary templates"""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute("""
+                SELECT id, name, description, schema_json, prompt_template,
+                       is_default, is_preset, created_at, updated_at
+                FROM summary_templates
+                ORDER BY is_preset DESC, name ASC
+            """)
+            rows = await cursor.fetchall()
+            columns = [col[0] for col in cursor.description]
+            return [dict(zip(columns, row)) for row in rows]
+
+    async def get_template_by_id(self, template_id: str):
+        """Get a specific template by ID"""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute("""
+                SELECT id, name, description, schema_json, prompt_template,
+                       is_default, is_preset, created_at, updated_at
+                FROM summary_templates WHERE id = ?
+            """, (template_id,))
+            row = await cursor.fetchone()
+            if row:
+                columns = [col[0] for col in cursor.description]
+                return dict(zip(columns, row))
+            return None
+
+    async def get_default_template(self):
+        """Get the default template"""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute("""
+                SELECT id, name, description, schema_json, prompt_template,
+                       is_default, is_preset, created_at, updated_at
+                FROM summary_templates WHERE is_default = 1
+            """)
+            row = await cursor.fetchone()
+            if row:
+                columns = [col[0] for col in cursor.description]
+                return dict(zip(columns, row))
+            return None
+
+    async def create_template(self, template_data: dict) -> str:
+        """Create a new summary template"""
+        import uuid
+        template_id = str(uuid.uuid4())
+        now = datetime.utcnow().isoformat()
+
+        async with self._get_connection() as conn:
+            await conn.execute("""
+                INSERT INTO summary_templates
+                (id, name, description, schema_json, prompt_template, is_default, is_preset, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                template_id,
+                template_data.get('name', 'Untitled Template'),
+                template_data.get('description', ''),
+                json.dumps(template_data.get('schema', {})),
+                template_data.get('prompt_template', ''),
+                0,  # is_default
+                template_data.get('is_preset', 0),
+                now,
+                now
+            ))
+            await conn.commit()
+            logger.info(f"Created template: {template_id}")
+            return template_id
+
+    async def update_template(self, template_id: str, template_data: dict) -> bool:
+        """Update an existing template"""
+        now = datetime.utcnow().isoformat()
+
+        async with self._get_connection() as conn:
+            # Check if template exists and is not a preset
+            cursor = await conn.execute(
+                "SELECT is_preset FROM summary_templates WHERE id = ?",
+                (template_id,)
+            )
+            row = await cursor.fetchone()
+            if not row:
+                raise ValueError(f"Template not found: {template_id}")
+            if row[0] == 1:
+                raise ValueError("Cannot modify preset templates")
+
+            await conn.execute("""
+                UPDATE summary_templates
+                SET name = ?, description = ?, schema_json = ?, prompt_template = ?, updated_at = ?
+                WHERE id = ?
+            """, (
+                template_data.get('name'),
+                template_data.get('description', ''),
+                json.dumps(template_data.get('schema', {})),
+                template_data.get('prompt_template', ''),
+                now,
+                template_id
+            ))
+            await conn.commit()
+            logger.info(f"Updated template: {template_id}")
+            return True
+
+    async def delete_template(self, template_id: str) -> bool:
+        """Delete a template"""
+        async with self._get_connection() as conn:
+            # Check if template exists and is not a preset
+            cursor = await conn.execute(
+                "SELECT is_preset, is_default FROM summary_templates WHERE id = ?",
+                (template_id,)
+            )
+            row = await cursor.fetchone()
+            if not row:
+                raise ValueError(f"Template not found: {template_id}")
+            if row[0] == 1:
+                raise ValueError("Cannot delete preset templates")
+            if row[1] == 1:
+                raise ValueError("Cannot delete the default template")
+
+            await conn.execute("DELETE FROM summary_templates WHERE id = ?", (template_id,))
+            await conn.commit()
+            logger.info(f"Deleted template: {template_id}")
+            return True
+
+    async def set_default_template(self, template_id: str) -> bool:
+        """Set a template as the default"""
+        async with self._get_connection() as conn:
+            # Check if template exists
+            cursor = await conn.execute(
+                "SELECT id FROM summary_templates WHERE id = ?",
+                (template_id,)
+            )
+            if not await cursor.fetchone():
+                raise ValueError(f"Template not found: {template_id}")
+
+            # Unset current default
+            await conn.execute("UPDATE summary_templates SET is_default = 0 WHERE is_default = 1")
+            # Set new default
+            await conn.execute("UPDATE summary_templates SET is_default = 1 WHERE id = ?", (template_id,))
+            await conn.commit()
+            logger.info(f"Set default template: {template_id}")
+            return True
+
+    async def initialize_preset_templates(self):
+        """Initialize preset templates if they don't exist"""
+        # Check if presets already exist
+        async with self._get_connection() as conn:
+            cursor = await conn.execute("SELECT COUNT(*) FROM summary_templates WHERE is_preset = 1")
+            count = (await cursor.fetchone())[0]
+            if count > 0:
+                return  # Presets already initialized
+
+        presets = [
+            {
+                'name': 'Standard',
+                'description': 'Comprehensive meeting summary with all key sections',
+                'is_preset': 1,
+                'schema': {
+                    'sections': [
+                        {'key': 'MeetingName', 'title': 'Meeting Name', 'type': 'text'},
+                        {'key': 'People', 'title': 'People', 'type': 'list'},
+                        {'key': 'SessionSummary', 'title': 'Session Summary', 'type': 'blocks'},
+                        {'key': 'CriticalDeadlines', 'title': 'Critical Deadlines', 'type': 'blocks'},
+                        {'key': 'KeyItemsDecisions', 'title': 'Key Items & Decisions', 'type': 'blocks'},
+                        {'key': 'ImmediateActionItems', 'title': 'Immediate Action Items', 'type': 'blocks'},
+                        {'key': 'NextSteps', 'title': 'Next Steps', 'type': 'blocks'},
+                        {'key': 'MeetingNotes', 'title': 'Meeting Notes', 'type': 'notes'}
+                    ]
+                },
+                'prompt_template': ''
+            },
+            {
+                'name': 'Action-Focused',
+                'description': 'Emphasizes decisions, action items, and deadlines',
+                'is_preset': 1,
+                'schema': {
+                    'sections': [
+                        {'key': 'MeetingName', 'title': 'Meeting Name', 'type': 'text'},
+                        {'key': 'KeyDecisions', 'title': 'Key Decisions Made', 'type': 'blocks'},
+                        {'key': 'ActionItems', 'title': 'Action Items', 'type': 'blocks'},
+                        {'key': 'Deadlines', 'title': 'Deadlines & Due Dates', 'type': 'blocks'},
+                        {'key': 'Owners', 'title': 'Task Owners', 'type': 'blocks'},
+                        {'key': 'Blockers', 'title': 'Blockers & Risks', 'type': 'blocks'}
+                    ]
+                },
+                'prompt_template': 'Focus primarily on extracting actionable items, decisions, owners, and deadlines from this meeting.'
+            },
+            {
+                'name': 'Brief',
+                'description': 'Executive summary in 1-2 paragraphs',
+                'is_preset': 1,
+                'schema': {
+                    'sections': [
+                        {'key': 'MeetingName', 'title': 'Meeting Name', 'type': 'text'},
+                        {'key': 'ExecutiveSummary', 'title': 'Executive Summary', 'type': 'blocks'},
+                        {'key': 'KeyTakeaways', 'title': 'Key Takeaways', 'type': 'blocks'}
+                    ]
+                },
+                'prompt_template': 'Provide a brief, executive-level summary in 1-2 paragraphs. Focus only on the most important points.'
+            },
+            {
+                'name': 'Technical',
+                'description': 'Detailed technical discussions and architecture notes',
+                'is_preset': 1,
+                'schema': {
+                    'sections': [
+                        {'key': 'MeetingName', 'title': 'Meeting Name', 'type': 'text'},
+                        {'key': 'TechnicalDiscussion', 'title': 'Technical Discussion', 'type': 'blocks'},
+                        {'key': 'ArchitectureDecisions', 'title': 'Architecture Decisions', 'type': 'blocks'},
+                        {'key': 'CodeChanges', 'title': 'Code/Implementation Changes', 'type': 'blocks'},
+                        {'key': 'TechnicalDebt', 'title': 'Technical Debt', 'type': 'blocks'},
+                        {'key': 'Dependencies', 'title': 'Dependencies & Integrations', 'type': 'blocks'},
+                        {'key': 'ActionItems', 'title': 'Technical Action Items', 'type': 'blocks'}
+                    ]
+                },
+                'prompt_template': 'Focus on technical details, architecture decisions, code changes, and implementation specifics.'
+            },
+            {
+                'name': 'Sales/Customer',
+                'description': 'Customer meeting notes with pain points and follow-ups',
+                'is_preset': 1,
+                'schema': {
+                    'sections': [
+                        {'key': 'MeetingName', 'title': 'Meeting Name', 'type': 'text'},
+                        {'key': 'CustomerInfo', 'title': 'Customer/Prospect Info', 'type': 'blocks'},
+                        {'key': 'PainPoints', 'title': 'Pain Points & Challenges', 'type': 'blocks'},
+                        {'key': 'Requirements', 'title': 'Requirements & Needs', 'type': 'blocks'},
+                        {'key': 'Objections', 'title': 'Objections & Concerns', 'type': 'blocks'},
+                        {'key': 'Competitors', 'title': 'Competitor Mentions', 'type': 'blocks'},
+                        {'key': 'NextSteps', 'title': 'Follow-up Actions', 'type': 'blocks'},
+                        {'key': 'DealStatus', 'title': 'Deal Status/Notes', 'type': 'blocks'}
+                    ]
+                },
+                'prompt_template': 'This is a customer/sales meeting. Focus on customer pain points, requirements, objections, and follow-up actions.'
+            }
+        ]
+
+        # Create presets
+        for preset in presets:
+            template_id = await self.create_template(preset)
+            # Set Standard as default
+            if preset['name'] == 'Standard':
+                await self.set_default_template(template_id)
+
+        logger.info(f"Initialized {len(presets)} preset templates")
+
+    # ==================== CHAT CONVERSATIONS ====================
+
+    async def create_conversation(self, meeting_id: str, title: str = None) -> str:
+        """Create a new chat conversation for a meeting"""
+        import uuid
+        conversation_id = str(uuid.uuid4())
+        now = datetime.utcnow().isoformat()
+
+        async with self._get_connection() as conn:
+            await conn.execute("""
+                INSERT INTO chat_conversations (id, meeting_id, title, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+            """, (conversation_id, meeting_id, title or f"Chat {now[:10]}", now, now))
+            await conn.commit()
+            logger.info(f"Created conversation: {conversation_id} for meeting: {meeting_id}")
+            return conversation_id
+
+    async def get_conversations_for_meeting(self, meeting_id: str):
+        """Get all conversations for a meeting"""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute("""
+                SELECT id, meeting_id, title, created_at, updated_at
+                FROM chat_conversations
+                WHERE meeting_id = ?
+                ORDER BY updated_at DESC
+            """, (meeting_id,))
+            rows = await cursor.fetchall()
+            columns = [col[0] for col in cursor.description]
+            return [dict(zip(columns, row)) for row in rows]
+
+    async def get_conversation_by_id(self, conversation_id: str):
+        """Get a specific conversation"""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute("""
+                SELECT id, meeting_id, title, created_at, updated_at
+                FROM chat_conversations WHERE id = ?
+            """, (conversation_id,))
+            row = await cursor.fetchone()
+            if row:
+                columns = [col[0] for col in cursor.description]
+                return dict(zip(columns, row))
+            return None
+
+    async def delete_conversation(self, conversation_id: str) -> bool:
+        """Delete a conversation and its messages"""
+        async with self._get_connection() as conn:
+            # Messages are deleted via CASCADE
+            result = await conn.execute(
+                "DELETE FROM chat_conversations WHERE id = ?",
+                (conversation_id,)
+            )
+            await conn.commit()
+            return result.rowcount > 0
+
+    async def save_chat_message(self, conversation_id: str, role: str, content: str, context_chunks: list = None) -> str:
+        """Save a chat message"""
+        import uuid
+        message_id = str(uuid.uuid4())
+        now = datetime.utcnow().isoformat()
+
+        async with self._get_connection() as conn:
+            await conn.execute("""
+                INSERT INTO chat_messages (id, conversation_id, role, content, context_chunks, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                message_id,
+                conversation_id,
+                role,
+                content,
+                json.dumps(context_chunks) if context_chunks else None,
+                now
+            ))
+            # Update conversation's updated_at
+            await conn.execute("""
+                UPDATE chat_conversations SET updated_at = ? WHERE id = ?
+            """, (now, conversation_id))
+            await conn.commit()
+            return message_id
+
+    async def get_conversation_messages(self, conversation_id: str):
+        """Get all messages for a conversation"""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute("""
+                SELECT id, conversation_id, role, content, context_chunks, created_at
+                FROM chat_messages
+                WHERE conversation_id = ?
+                ORDER BY created_at ASC
+            """, (conversation_id,))
+            rows = await cursor.fetchall()
+            columns = [col[0] for col in cursor.description]
+            messages = []
+            for row in rows:
+                msg = dict(zip(columns, row))
+                if msg.get('context_chunks'):
+                    msg['context_chunks'] = json.loads(msg['context_chunks'])
+                messages.append(msg)
+            return messages
+
+    async def get_meeting_transcript_text(self, meeting_id: str) -> str:
+        """Get the full transcript text for a meeting (for chat context)"""
+        async with self._get_connection() as conn:
+            # First try transcript_chunks table
+            cursor = await conn.execute("""
+                SELECT transcript_text FROM transcript_chunks WHERE meeting_id = ?
+            """, (meeting_id,))
+            row = await cursor.fetchone()
+            if row and row[0]:
+                return row[0]
+
+            # Fallback to concatenating transcripts table
+            cursor = await conn.execute("""
+                SELECT transcript FROM transcripts WHERE meeting_id = ? ORDER BY timestamp ASC
+            """, (meeting_id,))
+            rows = await cursor.fetchall()
+            if rows:
+                return "\n".join(row[0] for row in rows if row[0])
+            return ""
+
+    # Aliases for API compatibility
+    async def create_chat_conversation(self, meeting_id: str, title: str = None) -> str:
+        """Alias for create_conversation"""
+        return await self.create_conversation(meeting_id, title)
+
+    async def get_chat_conversations(self, meeting_id: str):
+        """Alias for get_conversations_for_meeting"""
+        return await self.get_conversations_for_meeting(meeting_id)
+
+    async def add_chat_message(self, conversation_id: str, role: str, content: str, context_chunks: list = None) -> str:
+        """Alias for save_chat_message"""
+        return await self.save_chat_message(conversation_id, role, content, context_chunks)
+
+    async def get_chat_messages(self, conversation_id: str):
+        """Alias for get_conversation_messages"""
+        return await self.get_conversation_messages(conversation_id)
+
+    async def delete_chat_conversation(self, conversation_id: str) -> bool:
+        """Alias for delete_conversation"""
+        return await self.delete_conversation(conversation_id)
+
+    # ==================== SPEAKER IDENTIFICATION ====================
+
+    async def create_speaker(self, meeting_id: str, label: str, color: str = None) -> str:
+        """Create a new speaker for a meeting"""
+        import uuid
+        speaker_id = str(uuid.uuid4())
+        now = datetime.utcnow().isoformat()
+
+        async with self._get_connection() as conn:
+            await conn.execute("""
+                INSERT INTO speakers (id, meeting_id, label, color, created_at)
+                VALUES (?, ?, ?, ?, ?)
+            """, (speaker_id, meeting_id, label, color, now))
+            await conn.commit()
+            logger.info(f"Created speaker: {speaker_id} for meeting: {meeting_id}")
+            return speaker_id
+
+    async def get_speakers_for_meeting(self, meeting_id: str):
+        """Get all speakers for a meeting"""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute("""
+                SELECT id, meeting_id, label, color, created_at
+                FROM speakers
+                WHERE meeting_id = ?
+                ORDER BY label ASC
+            """, (meeting_id,))
+            rows = await cursor.fetchall()
+            columns = [col[0] for col in cursor.description]
+            return [dict(zip(columns, row)) for row in rows]
+
+    async def update_speaker(self, speaker_id: str, label: str = None, color: str = None) -> bool:
+        """Update a speaker's label or color"""
+        async with self._get_connection() as conn:
+            updates = []
+            params = []
+            if label is not None:
+                updates.append("label = ?")
+                params.append(label)
+            if color is not None:
+                updates.append("color = ?")
+                params.append(color)
+
+            if not updates:
+                return False
+
+            params.append(speaker_id)
+            result = await conn.execute(
+                f"UPDATE speakers SET {', '.join(updates)} WHERE id = ?",
+                params
+            )
+            await conn.commit()
+            return result.rowcount > 0
+
+    async def delete_speaker(self, speaker_id: str) -> bool:
+        """Delete a speaker"""
+        async with self._get_connection() as conn:
+            result = await conn.execute(
+                "DELETE FROM speakers WHERE id = ?",
+                (speaker_id,)
+            )
+            await conn.commit()
+            return result.rowcount > 0
+
+    async def assign_speaker_to_transcript(self, transcript_id: str, speaker_id: str, speaker_label: str = None):
+        """Assign a speaker to a transcript segment"""
+        async with self._get_connection() as conn:
+            await conn.execute("""
+                UPDATE transcripts
+                SET speaker_id = ?, speaker_label = ?
+                WHERE id = ?
+            """, (speaker_id, speaker_label, transcript_id))
+            await conn.commit()
+
+    async def get_diarization_status(self, meeting_id: str):
+        """Get the diarization status for a meeting"""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute("""
+                SELECT status, error, created_at, updated_at
+                FROM diarization_processes
+                WHERE meeting_id = ?
+            """, (meeting_id,))
+            row = await cursor.fetchone()
+            if row:
+                columns = [col[0] for col in cursor.description]
+                return dict(zip(columns, row))
+            return None
+
+    async def create_diarization_process(self, meeting_id: str) -> str:
+        """Create a new diarization process"""
+        now = datetime.utcnow().isoformat()
+        async with self._get_connection() as conn:
+            await conn.execute("""
+                INSERT OR REPLACE INTO diarization_processes (meeting_id, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?)
+            """, (meeting_id, "pending", now, now))
+            await conn.commit()
+            return meeting_id
+
+    async def update_diarization_process(self, meeting_id: str, status: str, error: str = None):
+        """Update a diarization process status"""
+        now = datetime.utcnow().isoformat()
+        async with self._get_connection() as conn:
+            await conn.execute("""
+                UPDATE diarization_processes
+                SET status = ?, error = ?, updated_at = ?
+                WHERE meeting_id = ?
+            """, (status, error, now, meeting_id))
+            await conn.commit()
+
+    # ==================== CALENDAR INTEGRATION ====================
+
+    async def create_calendar_account(self, provider: str, email: str, access_token: str,
+                                      refresh_token: str, token_expires_at: str) -> str:
+        """Create a new calendar account"""
+        import uuid
+        account_id = str(uuid.uuid4())
+        now = datetime.utcnow().isoformat()
+
+        async with self._get_connection() as conn:
+            await conn.execute("""
+                INSERT INTO calendar_accounts (id, provider, email, access_token, refresh_token, token_expires_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (account_id, provider, email, access_token, refresh_token, token_expires_at, now, now))
+            await conn.commit()
+            logger.info(f"Created calendar account: {account_id} for email: {email}")
+            return account_id
+
+    async def get_calendar_accounts(self):
+        """Get all calendar accounts"""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute("""
+                SELECT id, provider, email, token_expires_at, created_at, updated_at
+                FROM calendar_accounts
+                ORDER BY created_at DESC
+            """)
+            rows = await cursor.fetchall()
+            columns = [col[0] for col in cursor.description]
+            return [dict(zip(columns, row)) for row in rows]
+
+    async def get_calendar_account_by_id(self, account_id: str):
+        """Get a calendar account by ID (includes tokens for internal use)"""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute("""
+                SELECT id, provider, email, access_token, refresh_token, token_expires_at, created_at, updated_at
+                FROM calendar_accounts WHERE id = ?
+            """, (account_id,))
+            row = await cursor.fetchone()
+            if row:
+                columns = [col[0] for col in cursor.description]
+                return dict(zip(columns, row))
+            return None
+
+    async def update_calendar_account_tokens(self, account_id: str, access_token: str,
+                                            refresh_token: str = None, token_expires_at: str = None):
+        """Update calendar account tokens"""
+        now = datetime.utcnow().isoformat()
+        async with self._get_connection() as conn:
+            updates = ["access_token = ?", "updated_at = ?"]
+            params = [access_token, now]
+
+            if refresh_token:
+                updates.append("refresh_token = ?")
+                params.append(refresh_token)
+            if token_expires_at:
+                updates.append("token_expires_at = ?")
+                params.append(token_expires_at)
+
+            params.append(account_id)
+            await conn.execute(
+                f"UPDATE calendar_accounts SET {', '.join(updates)} WHERE id = ?",
+                params
+            )
+            await conn.commit()
+
+    async def delete_calendar_account(self, account_id: str) -> bool:
+        """Delete a calendar account"""
+        async with self._get_connection() as conn:
+            result = await conn.execute(
+                "DELETE FROM calendar_accounts WHERE id = ?",
+                (account_id,)
+            )
+            await conn.commit()
+            return result.rowcount > 0
+
+    async def upsert_calendar_event(self, account_id: str, external_id: str, title: str,
+                                    start_time: str, end_time: str, description: str = None,
+                                    meeting_url: str = None, attendees: list = None) -> str:
+        """Insert or update a calendar event"""
+        import uuid
+        now = datetime.utcnow().isoformat()
+
+        async with self._get_connection() as conn:
+            # Check if event exists
+            cursor = await conn.execute(
+                "SELECT id FROM calendar_events WHERE account_id = ? AND external_id = ?",
+                (account_id, external_id)
+            )
+            existing = await cursor.fetchone()
+
+            if existing:
+                # Update existing event
+                await conn.execute("""
+                    UPDATE calendar_events
+                    SET title = ?, description = ?, start_time = ?, end_time = ?,
+                        meeting_url = ?, attendees = ?, updated_at = ?
+                    WHERE id = ?
+                """, (
+                    title, description, start_time, end_time,
+                    meeting_url, json.dumps(attendees) if attendees else None,
+                    now, existing[0]
+                ))
+                await conn.commit()
+                return existing[0]
+            else:
+                # Insert new event
+                event_id = str(uuid.uuid4())
+                await conn.execute("""
+                    INSERT INTO calendar_events (id, account_id, external_id, title, description,
+                                                start_time, end_time, meeting_url, attendees, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    event_id, account_id, external_id, title, description,
+                    start_time, end_time, meeting_url,
+                    json.dumps(attendees) if attendees else None,
+                    now, now
+                ))
+                await conn.commit()
+                return event_id
+
+    async def get_upcoming_events(self, limit: int = 10):
+        """Get upcoming calendar events"""
+        now = datetime.utcnow().isoformat()
+        async with self._get_connection() as conn:
+            cursor = await conn.execute("""
+                SELECT e.id, e.account_id, e.external_id, e.title, e.description,
+                       e.start_time, e.end_time, e.meeting_url, e.attendees, e.meeting_id,
+                       a.email as account_email
+                FROM calendar_events e
+                JOIN calendar_accounts a ON e.account_id = a.id
+                WHERE e.start_time >= ?
+                ORDER BY e.start_time ASC
+                LIMIT ?
+            """, (now, limit))
+            rows = await cursor.fetchall()
+            columns = [col[0] for col in cursor.description]
+            events = []
+            for row in rows:
+                event = dict(zip(columns, row))
+                if event.get('attendees'):
+                    event['attendees'] = json.loads(event['attendees'])
+                events.append(event)
+            return events
+
+    async def get_events_for_account(self, account_id: str, start_date: str = None, end_date: str = None):
+        """Get events for a specific account"""
+        async with self._get_connection() as conn:
+            query = """
+                SELECT id, account_id, external_id, title, description,
+                       start_time, end_time, meeting_url, attendees, meeting_id
+                FROM calendar_events
+                WHERE account_id = ?
+            """
+            params = [account_id]
+
+            if start_date:
+                query += " AND start_time >= ?"
+                params.append(start_date)
+            if end_date:
+                query += " AND end_time <= ?"
+                params.append(end_date)
+
+            query += " ORDER BY start_time ASC"
+
+            cursor = await conn.execute(query, params)
+            rows = await cursor.fetchall()
+            columns = [col[0] for col in cursor.description]
+            events = []
+            for row in rows:
+                event = dict(zip(columns, row))
+                if event.get('attendees'):
+                    event['attendees'] = json.loads(event['attendees'])
+                events.append(event)
+            return events
+
+    async def link_event_to_meeting(self, event_id: str, meeting_id: str):
+        """Link a calendar event to a meeting recording"""
+        now = datetime.utcnow().isoformat()
+        async with self._get_connection() as conn:
+            await conn.execute("""
+                UPDATE calendar_events SET meeting_id = ?, updated_at = ? WHERE id = ?
+            """, (meeting_id, now, event_id))
+            await conn.commit()
+
+    async def delete_calendar_event(self, event_id: str) -> bool:
+        """Delete a calendar event"""
+        async with self._get_connection() as conn:
+            result = await conn.execute(
+                "DELETE FROM calendar_events WHERE id = ?",
+                (event_id,)
+            )
+            await conn.commit()
+            return result.rowcount > 0
+
+    # ==================== AUTO-JOIN SETTINGS ====================
+
+    async def get_auto_join_settings(self):
+        """Get auto-join settings"""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute("""
+                SELECT id, enabled, auto_record, reminder_minutes, supported_platforms
+                FROM auto_join_settings WHERE id = '1'
+            """)
+            row = await cursor.fetchone()
+            if row:
+                columns = [col[0] for col in cursor.description]
+                settings = dict(zip(columns, row))
+                if settings.get('supported_platforms'):
+                    settings['supported_platforms'] = json.loads(settings['supported_platforms'])
+                return settings
+            return {
+                'enabled': False,
+                'auto_record': True,
+                'reminder_minutes': 5,
+                'supported_platforms': ['zoom', 'teams', 'meet']
+            }
+
+    async def update_auto_join_settings(self, enabled: bool = None, auto_record: bool = None,
+                                       reminder_minutes: int = None, supported_platforms: list = None):
+        """Update auto-join settings"""
+        async with self._get_connection() as conn:
+            updates = []
+            params = []
+
+            if enabled is not None:
+                updates.append("enabled = ?")
+                params.append(1 if enabled else 0)
+            if auto_record is not None:
+                updates.append("auto_record = ?")
+                params.append(1 if auto_record else 0)
+            if reminder_minutes is not None:
+                updates.append("reminder_minutes = ?")
+                params.append(reminder_minutes)
+            if supported_platforms is not None:
+                updates.append("supported_platforms = ?")
+                params.append(json.dumps(supported_platforms))
+
+            if updates:
+                params.append('1')
+                await conn.execute(
+                    f"UPDATE auto_join_settings SET {', '.join(updates)} WHERE id = ?",
+                    params
+                )
+                await conn.commit()
+
+    async def log_meeting_join(self, event_id: str, action: str) -> str:
+        """Log a meeting join action"""
+        import uuid
+        log_id = str(uuid.uuid4())
+        now = datetime.utcnow().isoformat()
+
+        async with self._get_connection() as conn:
+            await conn.execute("""
+                INSERT INTO meeting_join_log (id, event_id, action, timestamp)
+                VALUES (?, ?, ?, ?)
+            """, (log_id, event_id, action, now))
+            await conn.commit()
+            return log_id
+
+    async def get_upcoming_auto_join_candidates(self, minutes_ahead: int = 30):
+        """Get upcoming events that are candidates for auto-join"""
+        now = datetime.utcnow()
+        cutoff = (now + timedelta(minutes=minutes_ahead)).isoformat()
+
+        async with self._get_connection() as conn:
+            cursor = await conn.execute("""
+                SELECT e.id, e.title, e.start_time, e.end_time, e.meeting_url,
+                       a.email as account_email
+                FROM calendar_events e
+                JOIN calendar_accounts a ON e.account_id = a.id
+                WHERE e.start_time >= ? AND e.start_time <= ? AND e.meeting_url IS NOT NULL
+                ORDER BY e.start_time ASC
+            """, (now.isoformat(), cutoff))
+            rows = await cursor.fetchall()
+            columns = [col[0] for col in cursor.description]
+            return [dict(zip(columns, row)) for row in rows]
+
+    async def get_meeting_join_log(self, event_id: str = None, limit: int = 50):
+        """Get meeting join logs"""
+        async with self._get_connection() as conn:
+            if event_id:
+                cursor = await conn.execute("""
+                    SELECT id, event_id, action, timestamp
+                    FROM meeting_join_log
+                    WHERE event_id = ?
+                    ORDER BY timestamp DESC
+                    LIMIT ?
+                """, (event_id, limit))
+            else:
+                cursor = await conn.execute("""
+                    SELECT id, event_id, action, timestamp
+                    FROM meeting_join_log
+                    ORDER BY timestamp DESC
+                    LIMIT ?
+                """, (limit,))
+            rows = await cursor.fetchall()
+            columns = [col[0] for col in cursor.description]
+            return [dict(zip(columns, row)) for row in rows]
+
+
 

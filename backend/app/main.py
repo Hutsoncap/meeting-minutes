@@ -10,6 +10,7 @@ from db import DatabaseManager
 import json
 from threading import Lock
 from transcript_processor import TranscriptProcessor
+from chat_processor import ChatProcessor
 import time
 
 # Load environment variables
@@ -52,6 +53,9 @@ app.add_middleware(
 
 # Global database manager instance for meeting management endpoints
 db = DatabaseManager()
+
+# Initialize chat processor
+chat_processor = ChatProcessor(db)
 
 # New Pydantic models for meeting management
 class Transcript(BaseModel):
@@ -225,11 +229,11 @@ async def process_transcript_background(process_id: str, transcript: TranscriptR
         if not transcript.text or not transcript.text.strip():
             raise ValueError("Empty transcript text provided")
         
-        if transcript.model in ["claude", "groq", "openai"]:
+        if transcript.model in ["claude", "groq", "openai", "openrouter"]:
             # Check if API key is available for cloud providers
             api_key = await processor.db.get_api_key(transcript.model)
             if not api_key:
-                provider_names = {"claude": "Anthropic", "groq": "Groq", "openai": "OpenAI"}
+                provider_names = {"claude": "Anthropic", "groq": "Groq", "openai": "OpenAI", "openrouter": "OpenRouter"}
                 raise ValueError(f"{provider_names.get(transcript.model, transcript.model)} API key not configured. Please set your API key in the model settings.")
 
         _, all_json_data = await processor.process_transcript(
@@ -629,6 +633,573 @@ async def search_transcripts(request: SearchRequest):
     except Exception as e:
         logger.error(f"Error searching transcripts: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# ==================== SUMMARY TEMPLATES API ====================
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize preset templates on startup"""
+    logger.info("Initializing preset templates...")
+    try:
+        await db.initialize_preset_templates()
+        logger.info("Preset templates initialized successfully")
+    except Exception as e:
+        logger.error(f"Error initializing preset templates: {str(e)}", exc_info=True)
+
+@app.get("/summary-templates")
+async def get_templates():
+    """Get all summary templates"""
+    try:
+        templates = await db.get_all_templates()
+        # Parse schema_json for each template
+        for t in templates:
+            if t.get('schema_json'):
+                t['schema'] = json.loads(t['schema_json'])
+                del t['schema_json']
+        return JSONResponse(content=templates)
+    except Exception as e:
+        logger.error(f"Error getting templates: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/summary-templates/{template_id}")
+async def get_template(template_id: str):
+    """Get a specific template"""
+    try:
+        template = await db.get_template_by_id(template_id)
+        if not template:
+            raise HTTPException(status_code=404, detail="Template not found")
+        if template.get('schema_json'):
+            template['schema'] = json.loads(template['schema_json'])
+            del template['schema_json']
+        return JSONResponse(content=template)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting template: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class TemplateCreate(BaseModel):
+    name: str
+    description: str = ""
+    template_schema: dict  # renamed from 'schema' to avoid BaseModel conflict
+    prompt_template: str = ""
+
+@app.post("/summary-templates")
+async def create_template(template: TemplateCreate):
+    """Create a new template"""
+    try:
+        data = template.model_dump()
+        data['schema'] = data.pop('template_schema')  # Map back to 'schema' for DB
+        template_id = await db.create_template(data)
+        return {"id": template_id, "message": "Template created successfully"}
+    except Exception as e:
+        logger.error(f"Error creating template: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class TemplateUpdate(BaseModel):
+    name: str
+    description: str = ""
+    template_schema: dict  # renamed from 'schema' to avoid BaseModel conflict
+    prompt_template: str = ""
+
+@app.put("/summary-templates/{template_id}")
+async def update_template(template_id: str, template: TemplateUpdate):
+    """Update an existing template"""
+    try:
+        data = template.model_dump()
+        data['schema'] = data.pop('template_schema')  # Map back to 'schema' for DB
+        await db.update_template(template_id, data)
+        return {"message": "Template updated successfully"}
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"Error updating template: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/summary-templates/{template_id}")
+async def delete_template(template_id: str):
+    """Delete a template"""
+    try:
+        await db.delete_template(template_id)
+        return {"message": "Template deleted successfully"}
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"Error deleting template: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/summary-templates/{template_id}/set-default")
+async def set_default_template(template_id: str):
+    """Set a template as the default"""
+    try:
+        await db.set_default_template(template_id)
+        return {"message": "Default template set successfully"}
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"Error setting default template: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/summary-templates/default")
+async def get_default_template_endpoint():
+    """Get the current default template"""
+    try:
+        template = await db.get_default_template()
+        if not template:
+            raise HTTPException(status_code=404, detail="No default template set")
+        if template.get('schema_json'):
+            template['schema'] = json.loads(template['schema_json'])
+            del template['schema_json']
+        return JSONResponse(content=template)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting default template: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==================== END SUMMARY TEMPLATES API ====================
+
+# ==================== CHAT WITH MEETINGS API ====================
+
+class ChatMessageRequest(BaseModel):
+    message: str
+    conversation_id: Optional[str] = None
+    model_provider: str = "ollama"
+    model_name: str = "llama3.2:latest"
+
+class ChatMessageResponse(BaseModel):
+    conversation_id: str
+    message_id: str
+    response: str
+
+class CreateConversationRequest(BaseModel):
+    meeting_id: str
+    title: Optional[str] = None
+
+@app.post("/meetings/{meeting_id}/chat")
+async def send_chat_message(meeting_id: str, request: ChatMessageRequest):
+    """Send a chat message about a meeting and get a response"""
+    try:
+        logger.info(f"Chat request for meeting {meeting_id}: {request.message[:50]}...")
+
+        # Check if meeting exists
+        meeting = await db.get_meeting(meeting_id)
+        if not meeting:
+            raise HTTPException(status_code=404, detail="Meeting not found")
+
+        # Create or get conversation
+        conversation_id = request.conversation_id
+        if not conversation_id:
+            # Create new conversation
+            title = await chat_processor.create_conversation_title(request.message)
+            conversation_id = await db.create_chat_conversation(meeting_id, title)
+
+        # Save user message
+        user_message_id = await db.add_chat_message(conversation_id, "user", request.message)
+
+        # Get conversation history for context
+        messages = await db.get_chat_messages(conversation_id)
+        conversation_history = [{"role": m["role"], "content": m["content"]} for m in messages[:-1]]  # Exclude current message
+
+        # Generate response
+        response_text = await chat_processor.generate_response(
+            meeting_id=meeting_id,
+            message=request.message,
+            conversation_history=conversation_history,
+            model_provider=request.model_provider,
+            model_name=request.model_name
+        )
+
+        # Save assistant response
+        assistant_message_id = await db.add_chat_message(conversation_id, "assistant", response_text)
+
+        return JSONResponse(content={
+            "conversation_id": conversation_id,
+            "message_id": assistant_message_id,
+            "response": response_text
+        })
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in chat: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/meetings/{meeting_id}/chat/conversations")
+async def get_meeting_conversations(meeting_id: str):
+    """Get all chat conversations for a meeting"""
+    try:
+        # Check if meeting exists
+        meeting = await db.get_meeting(meeting_id)
+        if not meeting:
+            raise HTTPException(status_code=404, detail="Meeting not found")
+
+        conversations = await db.get_chat_conversations(meeting_id)
+        return JSONResponse(content=conversations)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting conversations: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/chat/conversations/{conversation_id}/messages")
+async def get_conversation_messages(conversation_id: str):
+    """Get all messages in a conversation"""
+    try:
+        messages = await db.get_chat_messages(conversation_id)
+        if not messages:
+            raise HTTPException(status_code=404, detail="Conversation not found or empty")
+        return JSONResponse(content=messages)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting messages: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/chat/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: str):
+    """Delete a chat conversation and all its messages"""
+    try:
+        await db.delete_chat_conversation(conversation_id)
+        return {"message": "Conversation deleted successfully"}
+
+    except Exception as e:
+        logger.error(f"Error deleting conversation: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/chat/conversations")
+async def create_conversation(request: CreateConversationRequest):
+    """Create a new chat conversation for a meeting"""
+    try:
+        # Check if meeting exists
+        meeting = await db.get_meeting(request.meeting_id)
+        if not meeting:
+            raise HTTPException(status_code=404, detail="Meeting not found")
+
+        title = request.title or "New Conversation"
+        conversation_id = await db.create_chat_conversation(request.meeting_id, title)
+
+        return JSONResponse(content={
+            "id": conversation_id,
+            "meeting_id": request.meeting_id,
+            "title": title
+        })
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating conversation: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==================== END CHAT WITH MEETINGS API ====================
+
+# ==================== SPEAKER IDENTIFICATION API ====================
+
+from diarization_processor import DiarizationProcessor, is_pyannote_available
+
+# Initialize diarization processor
+diarization_processor = DiarizationProcessor(db)
+
+class SpeakerUpdateRequest(BaseModel):
+    label: str
+
+class DiarizeRequest(BaseModel):
+    audio_path: str
+
+@app.get("/speakers/status")
+async def get_diarization_availability():
+    """Check if speaker diarization is available"""
+    return {
+        "pyannote_available": is_pyannote_available(),
+        "message": "Pyannote speaker diarization is available" if is_pyannote_available()
+                   else "Pyannote not installed. Install with: pip install pyannote.audio"
+    }
+
+@app.post("/meetings/{meeting_id}/diarize")
+async def diarize_meeting(meeting_id: str, request: DiarizeRequest, background_tasks: BackgroundTasks):
+    """Trigger speaker diarization for a meeting"""
+    try:
+        # Check if meeting exists
+        meeting = await db.get_meeting(meeting_id)
+        if not meeting:
+            raise HTTPException(status_code=404, detail="Meeting not found")
+
+        # Start diarization in background
+        background_tasks.add_task(
+            diarization_processor.diarize_audio,
+            meeting_id,
+            request.audio_path
+        )
+
+        return {
+            "message": "Diarization started",
+            "meeting_id": meeting_id,
+            "pyannote_available": is_pyannote_available()
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error starting diarization: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/meetings/{meeting_id}/diarization-status")
+async def get_meeting_diarization_status(meeting_id: str):
+    """Get the diarization status for a meeting"""
+    try:
+        status = await diarization_processor.get_diarization_status(meeting_id)
+        return status or {"status": "not_started"}
+    except Exception as e:
+        logger.error(f"Error getting diarization status: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/meetings/{meeting_id}/speakers")
+async def get_meeting_speakers(meeting_id: str):
+    """Get all speakers for a meeting"""
+    try:
+        # Check if meeting exists
+        meeting = await db.get_meeting(meeting_id)
+        if not meeting:
+            raise HTTPException(status_code=404, detail="Meeting not found")
+
+        speakers = await diarization_processor.get_meeting_speakers(meeting_id)
+        return JSONResponse(content=speakers)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting speakers: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/meetings/{meeting_id}/speakers/{speaker_id}")
+async def update_speaker(meeting_id: str, speaker_id: str, request: SpeakerUpdateRequest):
+    """Update a speaker's label"""
+    try:
+        success = await diarization_processor.update_speaker_label(speaker_id, request.label)
+        if not success:
+            raise HTTPException(status_code=404, detail="Speaker not found")
+
+        # Also update all transcripts with this speaker
+        await db.assign_speaker_to_transcript(speaker_id, speaker_id, request.label)
+
+        return {"message": "Speaker updated successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating speaker: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/meetings/{meeting_id}/speakers/{speaker_id}")
+async def delete_speaker(meeting_id: str, speaker_id: str):
+    """Delete a speaker"""
+    try:
+        success = await db.delete_speaker(speaker_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Speaker not found")
+        return {"message": "Speaker deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting speaker: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==================== END SPEAKER IDENTIFICATION API ====================
+
+# ==================== CALENDAR INTEGRATION API ====================
+
+from calendar_integration.google import GoogleCalendarClient, is_google_calendar_available
+
+# Initialize calendar client
+calendar_client = GoogleCalendarClient(db)
+
+@app.get("/calendar/status")
+async def get_calendar_status():
+    """Check if calendar integration is available and configured"""
+    return {
+        "google_api_available": is_google_calendar_available(),
+        "configured": calendar_client.is_configured,
+        "available": calendar_client.is_available,
+        "message": "Google Calendar integration is available" if calendar_client.is_available
+                   else "Google Calendar not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables."
+    }
+
+@app.get("/calendar/auth/google")
+async def initiate_google_auth():
+    """Get Google OAuth authorization URL"""
+    if not calendar_client.is_available:
+        raise HTTPException(
+            status_code=503,
+            detail="Google Calendar integration not available. Install google-api-python-client and configure OAuth credentials."
+        )
+
+    auth_url = calendar_client.get_auth_url()
+    if not auth_url:
+        raise HTTPException(status_code=500, detail="Failed to generate authorization URL")
+
+    return {"auth_url": auth_url}
+
+@app.get("/calendar/auth/google/callback")
+async def google_auth_callback(code: str):
+    """Handle Google OAuth callback"""
+    if not calendar_client.is_available:
+        raise HTTPException(status_code=503, detail="Google Calendar integration not available")
+
+    result = await calendar_client.exchange_code(code)
+    if not result:
+        raise HTTPException(status_code=400, detail="Failed to exchange authorization code")
+
+    return {
+        "message": "Google Calendar connected successfully",
+        "account_id": result['account_id'],
+        "email": result['email']
+    }
+
+@app.get("/calendar/accounts")
+async def get_calendar_accounts():
+    """Get all connected calendar accounts"""
+    try:
+        accounts = await db.get_calendar_accounts()
+        return JSONResponse(content=accounts)
+    except Exception as e:
+        logger.error(f"Error getting calendar accounts: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/calendar/accounts/{account_id}")
+async def delete_calendar_account(account_id: str):
+    """Disconnect a calendar account"""
+    try:
+        success = await db.delete_calendar_account(account_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Account not found")
+        return {"message": "Calendar account disconnected successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting calendar account: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/calendar/sync")
+async def sync_calendar_events(background_tasks: BackgroundTasks):
+    """Trigger calendar sync for all connected accounts"""
+    try:
+        accounts = await db.get_calendar_accounts()
+        if not accounts:
+            return {"message": "No calendar accounts connected", "synced_events": 0}
+
+        total_events = 0
+        for account in accounts:
+            events = await calendar_client.sync_events(account['id'])
+            total_events += len(events)
+
+        return {
+            "message": "Calendar sync completed",
+            "accounts_synced": len(accounts),
+            "events_synced": total_events
+        }
+    except Exception as e:
+        logger.error(f"Error syncing calendar: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/calendar/events")
+async def get_upcoming_events(limit: int = 10):
+    """Get upcoming calendar events"""
+    try:
+        events = await db.get_upcoming_events(limit)
+        return JSONResponse(content=events)
+    except Exception as e:
+        logger.error(f"Error getting calendar events: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+class LinkEventRequest(BaseModel):
+    meeting_id: str
+
+@app.post("/calendar/events/{event_id}/link")
+async def link_event_to_meeting(event_id: str, request: LinkEventRequest):
+    """Link a calendar event to a meeting recording"""
+    try:
+        await db.link_event_to_meeting(event_id, request.meeting_id)
+        return {"message": "Event linked to meeting successfully"}
+    except Exception as e:
+        logger.error(f"Error linking event to meeting: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==================== END CALENDAR INTEGRATION API ====================
+
+# ==================== AUTO-JOIN MEETINGS API ====================
+
+class AutoJoinSettingsUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    auto_record: Optional[bool] = None
+    reminder_minutes: Optional[int] = None
+    supported_platforms: Optional[List[str]] = None
+
+@app.get("/auto-join/settings")
+async def get_auto_join_settings():
+    """Get auto-join settings"""
+    try:
+        settings = await db.get_auto_join_settings()
+        return JSONResponse(content=settings)
+    except Exception as e:
+        logger.error(f"Error getting auto-join settings: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/auto-join/settings")
+async def update_auto_join_settings(settings: AutoJoinSettingsUpdate):
+    """Update auto-join settings"""
+    try:
+        await db.update_auto_join_settings(
+            enabled=settings.enabled,
+            auto_record=settings.auto_record,
+            reminder_minutes=settings.reminder_minutes,
+            supported_platforms=settings.supported_platforms
+        )
+        updated_settings = await db.get_auto_join_settings()
+        return JSONResponse(content=updated_settings)
+    except Exception as e:
+        logger.error(f"Error updating auto-join settings: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/auto-join/upcoming")
+async def get_upcoming_auto_join_meetings(minutes_ahead: int = 30):
+    """Get upcoming meetings that qualify for auto-join"""
+    try:
+        candidates = await db.get_upcoming_auto_join_candidates(minutes_ahead)
+        return JSONResponse(content=candidates)
+    except Exception as e:
+        logger.error(f"Error getting auto-join candidates: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+class MeetingJoinAction(BaseModel):
+    action: str  # 'reminded', 'joined', 'skipped'
+
+@app.post("/auto-join/trigger/{event_id}")
+async def log_auto_join_action(event_id: str, action: MeetingJoinAction):
+    """Log an auto-join action for a meeting event"""
+    try:
+        valid_actions = ['reminded', 'joined', 'skipped']
+        if action.action not in valid_actions:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid action. Must be one of: {valid_actions}"
+            )
+
+        log_id = await db.log_meeting_join(event_id, action.action)
+        return {
+            "message": "Action logged successfully",
+            "log_id": log_id,
+            "event_id": event_id,
+            "action": action.action
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error logging auto-join action: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==================== END AUTO-JOIN MEETINGS API ====================
 
 @app.on_event("shutdown")
 async def shutdown_event():
