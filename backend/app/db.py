@@ -292,6 +292,18 @@ class DatabaseManager:
                 VALUES ('1', 0, 1, 5, '["zoom","teams","meet"]')
             """)
 
+            # Create google_oauth_credentials table for user-provided OAuth credentials
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS google_oauth_credentials (
+                    id TEXT PRIMARY KEY DEFAULT '1',
+                    client_id TEXT NOT NULL,
+                    client_secret TEXT NOT NULL,
+                    redirect_uri TEXT DEFAULT 'http://localhost:5167/calendar/auth/google/callback',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+
             conn.commit()
 
     @asynccontextmanager
@@ -1850,5 +1862,46 @@ class DatabaseManager:
             columns = [col[0] for col in cursor.description]
             return [dict(zip(columns, row)) for row in rows]
 
+    # Google OAuth Credentials Methods
+    async def save_google_oauth_credentials(self, client_id: str, client_secret: str, redirect_uri: str = None):
+        """Save or update Google OAuth credentials provided by the user"""
+        now = datetime.utcnow().isoformat()
+        redirect_uri = redirect_uri or 'http://localhost:5167/calendar/auth/google/callback'
+
+        async with self._get_connection() as conn:
+            # Use upsert pattern
+            await conn.execute("""
+                INSERT INTO google_oauth_credentials (id, client_id, client_secret, redirect_uri, created_at, updated_at)
+                VALUES ('1', ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    client_id = excluded.client_id,
+                    client_secret = excluded.client_secret,
+                    redirect_uri = excluded.redirect_uri,
+                    updated_at = excluded.updated_at
+            """, (client_id, client_secret, redirect_uri, now, now))
+            await conn.commit()
+            logger.info("Saved Google OAuth credentials")
+            return True
+
+    async def get_google_oauth_credentials(self):
+        """Get stored Google OAuth credentials"""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute("""
+                SELECT client_id, client_secret, redirect_uri, created_at, updated_at
+                FROM google_oauth_credentials WHERE id = '1'
+            """)
+            row = await cursor.fetchone()
+            if row:
+                columns = [col[0] for col in cursor.description]
+                return dict(zip(columns, row))
+            return None
+
+    async def delete_google_oauth_credentials(self):
+        """Delete stored Google OAuth credentials"""
+        async with self._get_connection() as conn:
+            await conn.execute("DELETE FROM google_oauth_credentials WHERE id = '1'")
+            await conn.commit()
+            logger.info("Deleted Google OAuth credentials")
+            return True
 
 

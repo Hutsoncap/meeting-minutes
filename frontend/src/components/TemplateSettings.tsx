@@ -14,7 +14,9 @@ import {
   Zap,
   FileTextIcon,
   Code,
-  Users
+  Users,
+  RefreshCw,
+  AlertCircle
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -76,7 +78,10 @@ export function TemplateSettings() {
   const [editorMode, setEditorMode] = useState<'create' | 'edit' | 'view'>('view');
   const [editingTemplate, setEditingTemplate] = useState<Partial<Template>>({});
 
+  const [fetchError, setFetchError] = useState<string | null>(null);
+
   const fetchTemplates = useCallback(async () => {
+    setFetchError(null);
     try {
       const response = await fetch(`${API_BASE}/summary-templates`);
       if (!response.ok) throw new Error('Failed to fetch templates');
@@ -90,7 +95,11 @@ export function TemplateSettings() {
       }
     } catch (error) {
       console.error('Error fetching templates:', error);
-      toast.error('Failed to load templates');
+      const errorMsg = error instanceof TypeError && error.message.includes('fetch')
+        ? 'Cannot connect to backend. Please ensure the backend server is running on port 5167.'
+        : 'Failed to load templates';
+      setFetchError(errorMsg);
+      toast.error(errorMsg);
     } finally {
       setLoading(false);
     }
@@ -248,6 +257,29 @@ export function TemplateSettings() {
     return (
       <div className="flex items-center justify-center h-48">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
+
+  if (fetchError) {
+    return (
+      <div className="flex flex-col items-center justify-center h-48 text-center space-y-4">
+        <div className="text-red-500">
+          <AlertCircle className="w-12 h-12 mx-auto mb-2 opacity-70" />
+          <p className="font-medium">Failed to Load Templates</p>
+          <p className="text-sm text-gray-500 mt-2 max-w-md">{fetchError}</p>
+        </div>
+        <Button
+          variant="outline"
+          onClick={() => {
+            setLoading(true);
+            fetchTemplates();
+          }}
+          className="gap-2"
+        >
+          <RefreshCw className="w-4 h-4" />
+          Try Again
+        </Button>
       </div>
     );
   }

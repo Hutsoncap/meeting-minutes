@@ -1018,24 +1018,87 @@ calendar_client = GoogleCalendarClient(db)
 @app.get("/calendar/status")
 async def get_calendar_status():
     """Check if calendar integration is available and configured"""
+    is_configured = await calendar_client.check_is_configured()
+    is_available = await calendar_client.check_is_available()
     return {
         "google_api_available": is_google_calendar_available(),
-        "configured": calendar_client.is_configured,
-        "available": calendar_client.is_available,
-        "message": "Google Calendar integration is available" if calendar_client.is_available
-                   else "Google Calendar not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables."
+        "configured": is_configured,
+        "available": is_available,
+        "message": "Google Calendar integration is available" if is_available
+                   else "Google Calendar not configured. Add your OAuth credentials in Settings → Calendar."
     }
+
+# OAuth Credentials Management
+class GoogleOAuthCredentials(BaseModel):
+    client_id: str
+    client_secret: str
+
+@app.get("/calendar/oauth-credentials")
+async def get_oauth_credentials():
+    """Get stored OAuth credentials (masked)"""
+    try:
+        creds = await db.get_google_oauth_credentials()
+        if creds:
+            # Mask the secret, only show last 4 chars
+            masked_secret = "***" + creds['client_secret'][-4:] if len(creds['client_secret']) > 4 else "****"
+            return {
+                "configured": True,
+                "client_id": creds['client_id'],
+                "client_secret_masked": masked_secret,
+                "redirect_uri": creds['redirect_uri'],
+                "created_at": creds['created_at']
+            }
+        return {"configured": False}
+    except Exception as e:
+        logger.error(f"Error getting OAuth credentials: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/calendar/oauth-credentials")
+async def save_oauth_credentials(credentials: GoogleOAuthCredentials):
+    """Save Google OAuth credentials"""
+    try:
+        # Reset the credentials loaded flag so the client will reload
+        calendar_client._credentials_loaded = False
+
+        await db.save_google_oauth_credentials(
+            client_id=credentials.client_id,
+            client_secret=credentials.client_secret
+        )
+        return {"message": "OAuth credentials saved successfully"}
+    except Exception as e:
+        logger.error(f"Error saving OAuth credentials: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/calendar/oauth-credentials")
+async def delete_oauth_credentials():
+    """Delete stored OAuth credentials"""
+    try:
+        # Reset the credentials loaded flag
+        calendar_client._credentials_loaded = False
+        calendar_client._client_id = None
+        calendar_client._client_secret = None
+
+        await db.delete_google_oauth_credentials()
+        # Also delete any connected accounts since credentials are now invalid
+        accounts = await db.get_calendar_accounts()
+        for account in accounts:
+            await db.delete_calendar_account(account['id'])
+        return {"message": "OAuth credentials and connected accounts deleted"}
+    except Exception as e:
+        logger.error(f"Error deleting OAuth credentials: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/calendar/auth/google")
 async def initiate_google_auth():
     """Get Google OAuth authorization URL"""
-    if not calendar_client.is_available:
+    is_available = await calendar_client.check_is_available()
+    if not is_available:
         raise HTTPException(
             status_code=503,
-            detail="Google Calendar integration not available. Install google-api-python-client and configure OAuth credentials."
+            detail="Google Calendar integration not available. Add your OAuth credentials in Settings → Calendar."
         )
 
-    auth_url = calendar_client.get_auth_url()
+    auth_url = await calendar_client.get_auth_url()
     if not auth_url:
         raise HTTPException(status_code=500, detail="Failed to generate authorization URL")
 
@@ -1044,7 +1107,8 @@ async def initiate_google_auth():
 @app.get("/calendar/auth/google/callback")
 async def google_auth_callback(code: str):
     """Handle Google OAuth callback"""
-    if not calendar_client.is_available:
+    is_available = await calendar_client.check_is_available()
+    if not is_available:
         raise HTTPException(status_code=503, detail="Google Calendar integration not available")
 
     result = await calendar_client.exchange_code(code)

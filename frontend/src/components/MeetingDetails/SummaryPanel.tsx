@@ -128,6 +128,8 @@ export function SummaryPanel({
                 }}
                 onOpenFolder={onOpenFolder}
                 hasSummary={!!aiSummary}
+                summary={aiSummary}
+                meetingTitle={meetingTitle}
               />
             </div>
           </div>

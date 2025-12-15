@@ -63,25 +63,56 @@ class GoogleCalendarClient:
         self._client_id = os.getenv('GOOGLE_CLIENT_ID')
         self._client_secret = os.getenv('GOOGLE_CLIENT_SECRET')
         self._redirect_uri = os.getenv('GOOGLE_REDIRECT_URI', 'http://localhost:5167/calendar/auth/google/callback')
+        self._credentials_loaded = False
+
+    async def _load_credentials_from_db(self):
+        """Load OAuth credentials from database if not set via environment"""
+        if self._credentials_loaded:
+            return
+
+        if not self._client_id or not self._client_secret:
+            try:
+                creds = await self.db.get_google_oauth_credentials()
+                if creds:
+                    self._client_id = creds.get('client_id')
+                    self._client_secret = creds.get('client_secret')
+                    self._redirect_uri = creds.get('redirect_uri', self._redirect_uri)
+                    logger.info("Loaded Google OAuth credentials from database")
+            except Exception as e:
+                logger.error(f"Failed to load OAuth credentials from DB: {e}")
+
+        self._credentials_loaded = True
 
     @property
     def is_configured(self) -> bool:
         """Check if Google OAuth is configured."""
         return bool(self._client_id and self._client_secret)
 
+    async def check_is_configured(self) -> bool:
+        """Async check if Google OAuth is configured (loads from DB if needed)."""
+        await self._load_credentials_from_db()
+        return self.is_configured
+
     @property
     def is_available(self) -> bool:
         """Check if Google Calendar integration is available."""
         return GOOGLE_API_AVAILABLE and self.is_configured
 
-    def get_auth_url(self, state: str = None) -> Optional[str]:
+    async def check_is_available(self) -> bool:
+        """Async check if Google Calendar integration is available."""
+        await self._load_credentials_from_db()
+        return GOOGLE_API_AVAILABLE and self.is_configured
+
+    async def get_auth_url(self, state: str = None) -> Optional[str]:
         """Generate OAuth authorization URL."""
         if not GOOGLE_API_AVAILABLE:
             logger.error("Google API libraries not available")
             return None
 
+        await self._load_credentials_from_db()
+
         if not self.is_configured:
-            logger.error("Google OAuth not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.")
+            logger.error("Google OAuth not configured. Set credentials via settings or environment variables.")
             return None
 
         try:
@@ -115,6 +146,8 @@ class GoogleCalendarClient:
         """Exchange authorization code for tokens."""
         if not GOOGLE_API_AVAILABLE:
             return None
+
+        await self._load_credentials_from_db()
 
         try:
             flow = Flow.from_client_config(
@@ -166,6 +199,8 @@ class GoogleCalendarClient:
         """Get valid credentials for an account, refreshing if necessary."""
         if not GOOGLE_API_AVAILABLE:
             return None
+
+        await self._load_credentials_from_db()
 
         account = await self.db.get_calendar_account_by_id(account_id)
         if not account:
