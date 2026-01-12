@@ -42,6 +42,20 @@ interface OpenRouterModel {
   completion_price?: string;
 }
 
+// Curated list of recommended OpenRouter models for summarization
+const RECOMMENDED_OPENROUTER_MODELS: OpenRouterModel[] = [
+  { id: 'anthropic/claude-sonnet-4', name: 'Claude Sonnet 4 (Recommended)' },
+  { id: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet' },
+  { id: 'anthropic/claude-3-haiku', name: 'Claude 3 Haiku (Fast)' },
+  { id: 'openai/gpt-4o', name: 'GPT-4o' },
+  { id: 'openai/gpt-4o-mini', name: 'GPT-4o Mini (Budget)' },
+  { id: 'google/gemini-2.0-flash-exp', name: 'Gemini 2.0 Flash' },
+  { id: 'google/gemini-pro-1.5', name: 'Gemini Pro 1.5' },
+  { id: 'meta-llama/llama-3.3-70b-instruct', name: 'Llama 3.3 70B' },
+  { id: 'deepseek/deepseek-chat', name: 'DeepSeek Chat (Budget)' },
+  { id: 'qwen/qwen-2.5-72b-instruct', name: 'Qwen 2.5 72B' },
+];
+
 interface ModelSettingsModalProps {
   modelConfig: ModelConfig;
   setModelConfig: (config: ModelConfig | ((prev: ModelConfig) => ModelConfig)) => void;
@@ -62,9 +76,9 @@ export function ModelSettingsModal({
   const [isApiKeyLocked, setIsApiKeyLocked] = useState<boolean>(true);
   const [isLockButtonVibrating, setIsLockButtonVibrating] = useState<boolean>(false);
   const { serverAddress } = useSidebar();
-  const [openRouterModels, setOpenRouterModels] = useState<OpenRouterModel[]>([]);
+  const [openRouterModels] = useState<OpenRouterModel[]>(RECOMMENDED_OPENROUTER_MODELS);
   const [openRouterError, setOpenRouterError] = useState<string>('');
-  const [isLoadingOpenRouter, setIsLoadingOpenRouter] = useState<boolean>(false);
+  const [isLoadingOpenRouter] = useState<boolean>(false);
   const [ollamaEndpoint, setOllamaEndpoint] = useState<string>(modelConfig.ollamaEndpoint || '');
   const [isLoadingOllama, setIsLoadingOllama] = useState<boolean>(false);
   const [lastFetchedEndpoint, setLastFetchedEndpoint] = useState<string>(modelConfig.ollamaEndpoint || '');
@@ -339,23 +353,7 @@ export function ModelSettingsModal({
     };
   }, [modelConfig.provider]); // Only depend on provider, NOT endpoint
 
-  const loadOpenRouterModels = async () => {
-    if (openRouterModels.length > 0) return; // Already loaded
-
-    try {
-      setIsLoadingOpenRouter(true);
-      setOpenRouterError('');
-      const data = (await invoke('get_openrouter_models')) as OpenRouterModel[];
-      setOpenRouterModels(data);
-    } catch (err) {
-      console.error('Error loading OpenRouter models:', err);
-      setOpenRouterError(
-        err instanceof Error ? err.message : 'Failed to load OpenRouter models'
-      );
-    } finally {
-      setIsLoadingOpenRouter(false);
-    }
-  };
+  // OpenRouter models are now a curated static list - no need to fetch
 
   const handleSave = async () => {
     const updatedConfig = {
@@ -508,11 +506,6 @@ export function ModelSettingsModal({
                   model: defaultModel,
                 });
                 fetchApiKey(provider);
-
-                // Load OpenRouter models only when OpenRouter is selected
-                if (provider === 'openrouter') {
-                  loadOpenRouterModels();
-                }
               }}
             >
               <SelectTrigger>
@@ -541,6 +534,12 @@ export function ModelSettingsModal({
                   <SelectItem value="loading" disabled>
                     Loading models...
                   </SelectItem>
+                ) : modelConfig.provider === 'openrouter' ? (
+                  openRouterModels.map((model) => (
+                    <SelectItem key={model.id} value={model.id}>
+                      {model.name}
+                    </SelectItem>
+                  ))
                 ) : (
                   modelOptions[modelConfig.provider].map((model) => (
                     <SelectItem key={model} value={model}>

@@ -142,6 +142,19 @@ class TranscriptProcessor:
                 llm = OpenAIModel(model_name, provider=OpenAIProvider(api_key=api_key))
                 logger.info(f"Using OpenAI model: {model_name}")
             # --- END OPENAI SUPPORT ---
+            # --- ADD OPENROUTER SUPPORT HERE ---
+            elif model == "openrouter":
+                api_key = await db.get_api_key("openrouter")
+                if not api_key: raise ValueError("OPENROUTER_API_KEY not configured. Please set your API key in the model settings.")
+                llm = OpenAIModel(
+                    model_name=model_name,
+                    provider=OpenAIProvider(
+                        base_url="https://openrouter.ai/api/v1",
+                        api_key=api_key
+                    )
+                )
+                logger.info(f"Using OpenRouter model: {model_name}")
+            # --- END OPENROUTER SUPPORT ---
             else:
                 logger.error(f"Unsupported model provider requested: {model}")
                 raise ValueError(f"Unsupported model provider: {model}")

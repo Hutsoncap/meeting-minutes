@@ -1,9 +1,18 @@
 "use client";
 
+import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
-import { Copy, Save, Loader2, Search, FolderOpen } from 'lucide-react';
+import { Copy, Save, Loader2, FolderOpen, Download, FileText, FileType, ChevronDown } from 'lucide-react';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import Analytics from '@/lib/analytics';
+import { exportAsMarkdown, exportAsPDF, exportAsDocx, Summary } from '@/lib/exportUtils';
+import { toast } from 'sonner';
 
 interface SummaryUpdaterButtonGroupProps {
   isSaving: boolean;
@@ -13,6 +22,8 @@ interface SummaryUpdaterButtonGroupProps {
   onFind?: () => void;
   onOpenFolder: () => Promise<void>;
   hasSummary: boolean;
+  summary?: Summary | null;
+  meetingTitle?: string;
 }
 
 export function SummaryUpdaterButtonGroup({
@@ -22,8 +33,51 @@ export function SummaryUpdaterButtonGroup({
   onCopy,
   onFind,
   onOpenFolder,
-  hasSummary
+  hasSummary,
+  summary,
+  meetingTitle = 'Meeting Summary'
 }: SummaryUpdaterButtonGroupProps) {
+  const [isExporting, setIsExporting] = useState(false);
+
+  const handleExportMarkdown = () => {
+    if (!summary) return;
+    try {
+      Analytics.trackButtonClick('export_markdown', 'meeting_details');
+      exportAsMarkdown(summary, meetingTitle);
+      toast.success('Exported as Markdown');
+    } catch (error) {
+      console.error('Export failed:', error);
+      toast.error('Failed to export as Markdown');
+    }
+  };
+
+  const handleExportPDF = () => {
+    if (!summary) return;
+    try {
+      Analytics.trackButtonClick('export_pdf', 'meeting_details');
+      exportAsPDF(summary, meetingTitle);
+      toast.success('Exported as PDF');
+    } catch (error) {
+      console.error('Export failed:', error);
+      toast.error('Failed to export as PDF');
+    }
+  };
+
+  const handleExportDocx = async () => {
+    if (!summary) return;
+    setIsExporting(true);
+    try {
+      Analytics.trackButtonClick('export_docx', 'meeting_details');
+      await exportAsDocx(summary, meetingTitle);
+      toast.success('Exported as Word document');
+    } catch (error) {
+      console.error('Export failed:', error);
+      toast.error('Failed to export as Word document');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   return (
     <ButtonGroup>
       {/* Save button */}
@@ -82,23 +136,39 @@ export function SummaryUpdaterButtonGroup({
         <span className="hidden xl:inline">Recording</span>
       </Button>
 
-      {/* Find button */}
-      {/* {onFind && (
-        <Button
-          variant="outline"
-          size="sm"
-          title="Find in Summary"
-          onClick={() => {
-            Analytics.trackButtonClick('find_in_summary', 'meeting_details');
-            onFind();
-          }}
-          disabled={!hasSummary}
-          className="cursor-pointer"
-        >
-          <Search />
-          <span className="hidden lg:inline">Find</span>
-        </Button>
-      )} */}
+      {/* Export dropdown */}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!hasSummary || isExporting}
+            title="Export Summary"
+          >
+            {isExporting ? (
+              <Loader2 className="animate-spin" size={18} />
+            ) : (
+              <Download size={18} />
+            )}
+            <span className="hidden lg:inline ml-1">Export</span>
+            <ChevronDown size={14} className="ml-1" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem onClick={handleExportMarkdown}>
+            <FileText className="mr-2 h-4 w-4" />
+            Markdown (.md)
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={handleExportPDF}>
+            <FileType className="mr-2 h-4 w-4" />
+            PDF (.pdf)
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={handleExportDocx}>
+            <FileText className="mr-2 h-4 w-4" />
+            Word (.docx)
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </ButtonGroup>
   );
 }

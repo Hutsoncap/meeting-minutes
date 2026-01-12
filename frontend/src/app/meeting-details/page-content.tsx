@@ -99,8 +99,7 @@ export default function PageContent({
       transition={{ duration: 0.3, ease: 'easeOut' }}
       className="flex flex-col h-screen bg-gray-50"
     >
-      <div className="flex flex-1 overflow-hidden">
-      
+      <div className="flex flex-1 overflow-hidden relative">
 
         <TranscriptPanel
           transcripts={meetingData.transcripts}
@@ -111,7 +110,7 @@ export default function PageContent({
           isRecording={isRecording}
         />
 
-          <SummaryPanel
+        <SummaryPanel
           meeting={meeting}
           meetingTitle={meetingData.meetingTitle}
           onTitleChange={meetingData.handleTitleChange}
